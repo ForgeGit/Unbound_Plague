@@ -1,0 +1,546 @@
+---
+title: "Processing"
+output:
+    html_document:
+        fig_retina: 1
+date: "2023-09-21"
+---
+
+# Load
+
+## - Libraries
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE,fig.showtext = TRUE,fig_retina = 1)
+source("./_scripts/0_0_Libraries.R")
+font_import()
+```
+
+
+## - Utils
+
+```{r}
+source(file = "./_scripts/0_1_DownloadUtils.R")
+```
+
+## - Auth Token request
+
+```{r}
+## Run once
+# token <- POST("https://www.warcraftlogs.com/oauth/token",
+#           config = list(),
+#           body = list(
+#             grant_type="client_credentials",
+#             client_id=Sys.getenv("client_id"),
+#             client_secret=Sys.getenv("client_secret")))
+# 
+# token <- content(token,"parsed")
+# 
+# Manually copy token to .env file and load locally
+```
+
+```{r}
+token <- Sys.getenv("TOKEN")
+
+url <- "https://classic.warcraftlogs.com/api/v2"
+
+WCL_API2_request <- function(request) {
+  
+  tryCatch({
+    
+    request <- jsonlite::toJSON(list(query=request),
+                                auto_unbox=TRUE,
+                                bigint_as_char=F)
+    
+    
+    response <- POST(url,
+                     add_headers("Content-Type" = "application/json",
+                                 "Authorization"= paste0("Bearer ",
+                                                         token)),
+                     body = request,
+                     content_type_json(),
+                     encode = "json")
+    
+    response_formated <- fromJSON(content(response,
+                                          as = "text",
+                                          encoding="UTF-8"),
+                                  bigint_as_char=TRUE)
+    
+    return(response_formated)
+  }, error = function(e) {
+    # Handle the error here or return an informative message
+    cat("Error in WCL_API2_request:", e$message, " Request: ",request,"\n")
+    return(NULL)  # Return an appropriate value or error indicator
+  })
+}
+
+```
+
+# Download 
+
+## - Log IDs
+
+```{r}
+source(file = "./_scripts/1_0_logID_download.R")
+#logs_code_df
+```
+## - Encounter Data (release)
+
+```{r}
+# release1 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h00_m10.csv")
+# release2 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h02_m11.csv")
+# release3 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h03_m39.csv")
+# release4 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h05_m49.csv")
+# release5 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h08_m01.csv")
+# release6 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h10_m54.csv")
+# release7 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h12_m14.csv")
+# release8 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h20_m24.csv")
+# release9 <- read.csv("../ICC_PTR/response_logs_code_df_ICC_release_2023_10_13_h23_m54.csv")
+# 
+# 
+# release_data <- bind_rows(release1,release2,release3,release4,release5,
+#                       release6,release7,release8,release9)%>%
+#   distinct(code, .keep_all = TRUE) %>%
+#   rename(logID = code) %>%
+#   mutate(startTime = as_datetime(as.POSIXct(startTime/1000, origin="1970-01-01")),
+#          endTime = as_datetime(as.POSIXct(endTime/1000, origin="1970-01-01")),
+#          logNote ="Sample")
+#write.csv(release_data,"./raw_data/release_ICC.csv")
+# logIDs <- logs_code_df %>% select(logID) %>% pull(.)
+# request_encounter <- sprintf(request_encounter_str, logIDs)
+# 
+# source(file = "./_scripts/1_1_encounterID_download.R")
+#encounter_data
+```
+
+## - Encounter Data
+
+```{r}
+logIDs <- logs_code_df %>% select(logID) %>% pull(.)
+request_encounter <- sprintf(request_encounter_str, logIDs)
+
+source(file = "./_scripts/1_1_encounterID_download.R")
+#encounter_data
+```
+
+## - Putri Unbound Plague dmg taken
+
+```{r}
+putri_df <- encounter_data %>% filter(encounterID==851 & size==10 & difficulty==4) %>%
+  
+  mutate(duration_s_filter = round(duration_s,0)) %>%
+  
+  distinct(difficulty, size, kill, fightPercentage, 
+           duration_s_filter, averageItemLevel,
+           .keep_all = TRUE) 
+
+# 851 Putricide
+# 
+# 70911
+# 
+
+Unbound_Plage <-"ability.id in (70911)"
+
+
+request_dmgtaken_str <- '{
+    reportData {
+        report(code: "%s") {
+            events(dataType:DamageTaken
+                  killType:Encounters
+                  hostilityType:Friendlies
+                  fightIDs:%i
+                  startTime: 0
+                  endTime: 999999999999
+                  filterExpression:"%s"){
+              data
+              nextPageTimestamp
+              }
+            }
+        }
+        }'
+
+```
+
+
+```{r}
+df_query <- putri_df %>% select(logID,fightID)
+
+n_loop = nrow(df_query)
+
+request_logs_code <- sprintf(request_dmgtaken_str,
+                             df_query$logID,
+                             df_query$fightID,
+                             Unbound_Plage)
+
+source(file = "./_scripts/1_2_dmgtaken_download.R")
+```
+
+# Process
+
+## - Merge all downloads
+
+```{r}
+log_data1 <- read.csv("raw_data/encounter_data_ICC_2023_10_17_h18_m39.csv")
+log_data2 <- read.csv("raw_data/encounter_data_ICC_2023_10_18_h07_m17.csv")
+log_data3 <- read.csv("raw_data/encounter_data_ICC_2023_10_18_h12_m38.csv")
+log_data <- bind_rows(log_data1,log_data2,log_data3)
+
+
+dmg_data1 <- read.csv("raw_data/output_dmg_taken_2023_10_18_h07_m41.csv")
+dmg_data2 <- read.csv("raw_data/output_dmg_taken_2023_10_18_h08_m56.csv")
+dmg_data3 <- read.csv("raw_data/output_dmg_taken_2023_10_18_h15_m07.csv")
+
+dmg_data <- bind_rows(dmg_data1,dmg_data2,dmg_data3)
+```
+
+## - Generate vars
+
+### + Plague data
+
+```{r}
+plague_cat <- dmg_data %>% filter(timestamp!=-1) %>% 
+  
+  select(timestamp,logID,fightID=fight,
+                   targetID,
+                   unmitigatedAmount,
+                   overkill) %>% 
+  
+  group_by(logID,fightID) %>%
+  
+  arrange(logID,fightID,timestamp) %>%
+
+  slice(1) %>%
+  
+  mutate(plague = ifelse(unmitigatedAmount %in% c(248,249),
+                         "Normal",
+                         "Bugged")) %>%
+  select(-c(overkill,unmitigatedAmount,targetID)) %>%
+  rename(plague_timestamp = timestamp)
+
+plague_cat
+```
+
+### + Log w/ wipes/kills
+
+```{r}
+logkill_cat <- log_data %>% filter(encounterID==851 & size==10 & difficulty==4) %>% 
+  
+  select(logID,fightID,
+                   kill) %>% 
+  
+  group_by(logID,fightID) %>%
+  
+  arrange(logID,fightID) %>% 
+  
+  group_by(logID,kill) %>% summarise(n=n()) %>% pivot_wider(names_from = kill, values_from = n) %>%
+
+  mutate(LogKill = ifelse(is.na(`TRUE`),
+                         "Log without\nHeroic kill",
+                         "Log with\nHeroic kill")) %>%
+  select(-c(`TRUE`,`FALSE`)) 
+
+logkill_cat
+```
+
+### + Overkill
+
+```{r}
+overkill_cat <- dmg_data %>% filter(timestamp!=-1 & !is.na(overkill)) %>% 
+  
+  select(logID,fightID=fight,
+                   targetID,
+                   unmitigatedAmount,
+                   overkill) %>% 
+  
+  group_by(logID,fightID) %>%
+  
+  arrange(logID,fightID) %>% summarise(plague_deaths=n()) %>% mutate(plague_deaths = paste0(plague_deaths," death"))
+
+overkill_cat
+```
+
+## - Merge all data
+
+```{r}
+data <- log_data %>% filter(encounterID==851 & size==10 & difficulty==4) %>%
+  
+  select(-c(X,encounterID,difficulty,hardModeLevel,averageItemLevel,size,completeRaid,fightPercentage))%>%
+  select(logID, fightID, everything()) %>%
+  
+  inner_join(plague_cat, by =c("logID","fightID")) %>%
+  
+  mutate(kill = ifelse(kill==FALSE,"Wipe","Kill"),
+         plague = factor(plague, levels =c("Normal","Bugged")))
+
+data
+```
+
+# Stats
+
+## Plague summary
+```{r}
+data %>% group_by(plague) %>% summarise(n=n())
+```
+
+## Bugged/Normal ID/logs
+
+```{r}
+data %>% group_by(logID,plague) %>% summarise(n=n())
+data %>% group_by(logID,plague) %>% summarise(n=n()) %>% pivot_wider(names_from = plague, values_from = n)
+
+
+logbug_cat <- data %>% group_by(logID,plague) %>% summarise(n=n()) %>% pivot_wider(names_from = plague, values_from = n) %>%
+
+  mutate(LogBug = ifelse(is.na(Bugged),
+                         "Normal Log",
+                         "Bugged Log"),
+         LogBug = factor(LogBug, levels =c("Normal Log","Bugged Log"))) %>%
+  select(-c(Normal,Bugged)) 
+logbug_cat
+
+logbug_cat %>% group_by(LogBug) %>% summarise(n=n())
+
+```
+
+# Viz
+
+```{r}
+font_add(family = "forgefooter", "forgefooter.ttf")
+font_import()
+n
+showtext_auto(TRUE)
+```
+
+## - Kill/Wipes
+
+```{r}
+plot1 <- data %>%
+  group_by(plague,kill) %>% 
+  summarise(n=n()) %>%
+  
+  ggplot(aes(x=kill, y=n, fill=plague)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  
+  scale_fill_manual(values=c("#E66100","#5D3A9B"))+
+  scale_y_continuous(labels = unit_format(unit = "k", scale = 1e-3),
+                     breaks = seq(1000,3000,1000)) +
+  
+  guides(fill="none") +
+  labs(title="",x="",y="",
+       subtitle="",caption="") +
+  
+  subplot_vivax_theme()
+
+plot1 
+
+ggsave("./_img/plot1.png",plot1,
+       width = 1.5, height =1,units="in",device = "png",dpi=300)
+
+
+```
+
+## - Log Kill/Wipes
+
+```{r}
+plot2 <-logbug_cat %>%
+  inner_join(logkill_cat,by=c("logID")) %>%
+  
+  filter(LogKill=="Log with\nHeroic kill") %>%
+  select(-c(LogKill)) %>%
+  left_join(log_data %>% filter(encounterID==851 & size==10 & difficulty==4)
+            %>% select(logID,fightID,kill),by=c("logID")) %>%
+  
+  group_by(logID,LogBug,kill) %>% 
+  summarise(n=n())%>%
+  ungroup() %>%
+  
+  pivot_wider(names_from = kill,values_from = n) %>%
+  
+  mutate(Wipes = case_when(
+    is.na(`FALSE`) ~ "No wipe",
+    `FALSE`>0 & `FALSE`<=2 ~ "1-2",
+    `FALSE`>2 & `FALSE`<=5 ~ "3-5",
+    `FALSE`>5 & `FALSE`<=10 ~ "6-10",
+    `FALSE`>10 ~ "10 or more",
+    .default = as.character("")
+  )) %>%
+
+group_by(Wipes,LogBug) %>% 
+  summarise(n=n()) %>%
+  
+  pivot_wider(names_from = LogBug, values_from = n) %>%
+  ungroup()%>%
+  mutate(total = `Normal Log` + `Bugged Log`,
+         #`Normal Log` = `Normal Log`/total,
+         #`Bugged Log` = `Bugged Log`/total,
+         `Normal Log` = `Normal Log`/532,
+         `Bugged Log` = `Bugged Log`/330,
+         ) %>%
+  select(-c(total)) %>%
+  pivot_longer(!Wipes ,names_to = "LogBug",values_to = "n") %>%
+  mutate(LogBug = factor(LogBug, levels =c("Normal Log","Bugged Log")),
+         Wipes = factor(Wipes, levels =c("No wipe","1-2","3-5","6-10","10 or more"))) %>%
+  
+  ggplot(aes(x= Wipes, y=n, fill=LogBug)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  
+  scale_fill_manual(values=c("#E66100","#5D3A9B")) +
+  scale_y_continuous(labels = scales::percent)+
+  
+  guides(fill="none") +
+  labs(title="",
+       x="",y="",
+       caption="",
+       subtitle="")  +
+  
+  subplot_vivax_theme()
+
+plot2
+
+ggsave("./_img/plot2.png",plot2,
+       width = 3, height =1,units="in",device = "png",dpi=300)
+
+```
+
+## - Log overkills
+
+```{r}
+plot3 <- logbug_cat  %>%
+  inner_join(logkill_cat,by=c("logID")) %>%
+  full_join(log_data%>% filter(encounterID==851 & size==10 & difficulty==4) %>% select(logID,fightID,kill),by=c("logID"))  %>%
+  
+  left_join(overkill_cat,by=c("logID","fightID")) %>%
+  
+  mutate(plague_deaths = ifelse(is.na(plague_deaths),"0 death",plague_deaths)) %>%
+  filter(!is.na(fightID) &!is.na(LogBug)& kill==T & plague_deaths!="5 death") %>%
+  
+  group_by(LogBug,plague_deaths) %>% 
+  summarise(n=n()) %>%
+  
+  pivot_wider(names_from = LogBug, values_from = n) %>%
+  ungroup()%>%
+  mutate(total = `Normal Log` + `Bugged Log`,
+        # `Normal Log` = `Normal Log`/total,
+        # `Bugged Log` = `Bugged Log`/total,
+        `Normal Log` = `Normal Log`/543,
+         `Bugged Log` = `Bugged Log`/345) %>%
+  select(-c(total)) %>%
+  pivot_longer(!plague_deaths ,names_to = "LogBug",values_to = "n")%>%
+  mutate(LogBug = factor(LogBug, levels =c("Normal Log","Bugged Log"))) %>%
+
+  ggplot(aes(x= plague_deaths, y=n,fill=LogBug)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  
+  scale_fill_manual(values=c("#E66100","#5D3A9B"))+
+  scale_y_continuous(labels = scales::percent) +
+  
+  guides(fill="none") +
+  labs(title="",x="",y="",
+       subtitle="") +
+  
+  subplot_vivax_theme()#+ theme(
+  #axis.text.y = element_blank(),
+  #axis.ticks = element_blank())
+
+plot3 
+
+ggsave("./_img/plot3.png",plot3,
+       width = 3, height =1,units="in",device = "png",dpi=300)
+```
+
+
+## - Damage raw
+
+```{r}
+ dmg_data %>% filter(timestamp!=-1) %>% 
+  
+  select(logID,fightID=fight,
+                   targetID,
+                   unmitigatedAmount,
+                   overkill) %>% 
+  
+  group_by(logID,fightID,targetID) %>%
+  
+  arrange(logID,fightID) %>% summarise(n=n()) %>% arrange(desc(n)) %>%
+  
+  left_join(logbug_cat, by=c("logID"))
+
+######################################
+
+plot4 <- dmg_data%>% filter(timestamp!=-1) %>% 
+  
+  select(logID,fightID=fight,
+                   targetID,
+                   unmitigatedAmount,
+                   overkill) %>%
+  
+  filter( (logID == "2AXQ31tZFwTNMf9D" & fightID==26 & targetID == 14 ) |
+ (logID == "DG4Pm2qgRM3dQYTC" & fightID==48 & targetID == 3)) %>% 
+  
+  group_by(logID,fightID) %>% slice(1:10) %>%
+  mutate(Row_ID = row_number())%>% 
+  
+  ggplot(aes(x= Row_ID, y=unmitigatedAmount,color=logID)) +
+  geom_line(size=2.5)+
+  
+  scale_y_continuous(labels=function(x) format(x, big.mark = ",", scientific = FALSE),
+                     breaks = seq(1000,10000,1000))+
+  scale_color_manual(values=c("#E66100","#5D3A9B"))+
+  scale_x_continuous(breaks = seq(1,10,1),
+                     limits = c(1,10),
+                     expand = c(0, 0)) +
+  
+  guides(color="none") +
+  labs(title="Heroic Professor Putricide 10-Man is BUGGED",x="Unbound Plague tick (1s/tick)",y="Damage Taken",
+  subtitle = "Unbound Plague: <b><span style='color:#5D3A9B'>Excessive damage</span></b> (Bug) vs. <b><span style='color:#E66100'>Intended damage</span></b>",
+       caption=c("<p><span style='font-family:forgefooter'>&#xe900;</span> discord.gg/wp55kqmyYG - Discfordge &#91;Vivax-Pagle(US)&#93; <br> <span style='font-family:forgefooter'>&#xe901;</span> github.com/ForgeGit/Unbound_Plague</p>")) +
+  
+  vivax_theme()+
+annotate("text",x=1.05,y=7350, label="Raids experiencing the bug (~50%) were more likely to:", colour="grey29",hjust=0,size=11,) +
+annotate("text",1.05, 6000, label="   - have more deaths", colour="grey29",hjust=0,size=9) +
+ annotate("text",x=1.05, y=4150, 
+          label="   - wipe more times",  colour="grey29",hjust=0,size=9) +
+ annotate("text",x=1.05, y=3650, 
+          label="     before a kill", colour="grey29",hjust=0,size=9) #+
+# annotate("text",1.05, 3500, label="", colour="grey29",hjust=0,size=10) 
+#   
+#   annotation_custom(ggplotGrob(plot2), xmin = 3.5, xmax = 5.8, 
+#                        ymin = 3500, ymax = 4875) +
+#   
+#   annotation_custom(ggplotGrob(plot3), xmin = 3.5, xmax = 5.8, 
+#                        ymin = 5150, ymax = 6525)
+
+  
+  
+plot4
+
+ggsave("./_img/plot4.png",plot4,
+       width = 6, height =3,units="in",device = "png",dpi=300)
+
+```
+
+## + Canvas 1
+
+```{r}
+plotbase <- magick::image_read("./_img/plot4.png")
+plot2 <- magick::image_read("./_img/plot3.png")
+plot1 <- magick::image_read("./_img/plot2.png")
+
+percent_resize <- 0.5
+new_width <- image_info(plot2)$width * percent_resize
+new_height <- image_info(plot2)$height * percent_resize
+plot2 <- image_resize(plot2, paste0(new_width, "x", new_height))
+
+new_width <- image_info(plot1)$width * percent_resize
+new_height <- image_info(plot1)$height * percent_resize
+plot1 <- image_resize(plot1, paste0(new_width, "x", new_height))
+
+
+canvas <- image_blank(width = 1800, height = 900)
+canvas <- image_composite(canvas, plotbase , offset = "+0+0",operator = "over")
+canvas <- image_composite(canvas, plot1 , offset = "+510+360",operator = "over")
+canvas <- image_composite(canvas,plot2  , offset = "+510+190",operator = "over")
+
+image_write(canvas, "./_img/UnboundPlague.png")
+
+```
